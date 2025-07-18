@@ -1,0 +1,15 @@
+# Ignore virtual environment
+venv/
+
+# Bytecode and caches
+__pycache__/
+*.pyc
+
+# Jupyter notebooks checkpoints
+.ipynb_checkpoints/
+
+# Environment variables
+.env
+
+# OS files
+.DS_Store
