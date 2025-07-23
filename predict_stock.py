@@ -1,30 +1,86 @@
 import yfinance as yf
 import pandas as pd 
-import numpy as np
-import matplotlib.pyplot as plt
-import seaborn as sns
 from sklearn.model_selection import train_test_split
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.metrics import accuracy_score, confusion_matrix, classification_report
+from textblob import TextBlob
+import praw
+
+reddit = praw.Reddit(
+    client_id = "8ArtuteIFTcyL0tW27Py5A",
+    client_secret = "3tUD3HMFHQbKtuQnqpndmpNgfzDA2Q",
+    user_agent = "Yourboyfatjoe10"
+)
+
+def score_sentiment(post):
+    text = post["title"] + " " + post["body"]
+    return TextBlob(text).sentiment.polarity
 
 ticker = "AAPL"
-data = yf.download(ticker, period = "5y", auto_adjust=True)
+data = yf.download(ticker, period = "10y" , auto_adjust=True)
+
+# Flatten multi-level column headers
+data.columns = data.columns.get_level_values(0)
+
+# Make date a column instead of an index
+data = data.reset_index()
+
+# Format to string for clean merging
+data["Date"] = pd.to_datetime(data["Date"]).dt.date.astype(str)
+
+def get_reddit_posts(ticker, limit=5000):
+    subreddits = ["stocks", "StockMarket", "investing", "news"]
+    posts = []
+    for sub in subreddits:
+        for post in reddit.subreddit(sub).search(ticker, limit=limit, sort="relevence"):
+            posts.append({
+                "title": post.title,
+                "body": post.selftext,
+                "date": str(post.created_utc)[:10]  # UNIX timestamp → date snippet
+            })
+    return posts
+
+def scrape_reddit_sentiment(ticker):
+    posts = get_reddit_posts(ticker)
+    data = []
+    for post in posts:
+        if post["body"]:
+            sentiment = score_sentiment(post)
+            data.append({
+                "date": pd.to_datetime(float(post["date"]), unit="s").date().isoformat(),
+                "sentiment": sentiment
+            })
+    return pd.DataFrame(data)
+
+
+sentiment_df = scrape_reddit_sentiment(ticker)
+sentiment_daily = sentiment_df.groupby("date").mean().reset_index()
+
+
+data.reset_index(inplace=True)  # Moves date from index into a column
+data["Date"] = pd.to_datetime(data["Date"]).dt.date.astype(str)  # Format to match sentiment dates
+sentiment_daily = sentiment_daily.reset_index(drop=True)  # In case it has leftover index
+merged_df = data.merge(sentiment_daily, left_on="Date", right_on="date", how="left")
+merged_df.drop(columns=["date"], inplace=True)  # optional
+merged_df.dropna(subset=["sentiment"], inplace=True)  # keep only rows with sentiment
+
 
 # Feature engineering
-data["Return"] = data["Close"].pct_change()
-data["MA10"] = data["Close"].rolling(window=10).mean()
-data["MA50"] = data["Close"].rolling(window=50).mean()
-data["Momentum"] = data["Close"] - data["Close"].shift(5)
-data["Volatility"] = data["Return"].rolling(window=5).std()
-data["Target"] = (data["Close"].shift(-1) > data["Close"]).astype(int)
-data.dropna(inplace=True)
+merged_df["Return"] = merged_df["Close"].pct_change()
+merged_df["MA5"] = merged_df["Close"].rolling(window=5).mean()
+merged_df["MA10"] = merged_df["Close"].rolling(window=10).mean()
+merged_df["Momentum"] = merged_df["Close"] - merged_df["Close"].shift(5)
+merged_df["Volatility"] = merged_df["Return"].rolling(window=5).std()
+merged_df["Sentiment"] = merged_df["sentiment"].fillna(method="ffill", limit=5)
+merged_df["Target"] = (merged_df["Close"].shift(-1) > merged_df["Close"]).astype(int)
+
 
 # Prepare inputs
-features = ["Return", "MA10", "MA50", "Momentum", "Volatility",]
-X = data[features]
-Y = data["Target"]
+features = ["Return", "MA5", "MA10", "Momentum", "Volatility", "Sentiment"]
+X = merged_df[features]
+Y = merged_df["Target"]
 
-X_train, X_test, Y_train, Y_test = train_test_split(X, Y, shuffle=False, test_size=0.4)
+X_train, X_test, Y_train, Y_test = train_test_split(X, Y, shuffle=False, test_size=0.3)
 
 model = RandomForestClassifier(class_weight="balanced", random_state=10)
 model.fit(X_train, Y_train)
@@ -34,9 +90,11 @@ print("Accuracy:", accuracy_score(Y_test, y_pred))
 print("Confusion Matrix:\n", confusion_matrix(Y_test, y_pred))
 print(classification_report(Y_test, y_pred))
 
-data_test = data.iloc[len(X_train):].copy()
+data_test = merged_df.iloc[len(X_train):].copy()
 data_test["Predicted"] = y_pred
 
 print(Y.value_counts())
 
+print(sentiment_daily["date"].min(), sentiment_daily["date"].max())
+print(sentiment_daily["date"].nunique())
 
