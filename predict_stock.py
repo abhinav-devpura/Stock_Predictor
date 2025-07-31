@@ -6,28 +6,28 @@ from sklearn.metrics import accuracy_score, confusion_matrix, classification_rep
 from textblob import TextBlob
 import praw
 
+# This is used to access the reddit API
 reddit = praw.Reddit(
     client_id = "8ArtuteIFTcyL0tW27Py5A",
     client_secret = "3tUD3HMFHQbKtuQnqpndmpNgfzDA2Q",
     user_agent = "Yourboyfatjoe10"
 )
 
+# Used to get the sentiment score polarity
 def score_sentiment(post):
     text = post["title"] + " " + post["body"]
     return TextBlob(text).sentiment.polarity
 
-ticker = "AAPL"
+# This is used to get all of the yFinance data for any given ticker
+ticker = "NVDA"
 data = yf.download(ticker, period = "10y" , auto_adjust=True)
-
-# Flatten multi-level column headers
 data.columns = data.columns.get_level_values(0)
-
-# Make date a column instead of an index
 data = data.reset_index()
 
 # Format to string for clean merging
 data["Date"] = pd.to_datetime(data["Date"]).dt.date.astype(str)
 
+# This is used to get a list of all relevent reddit posts
 def get_reddit_posts(ticker, limit=5000):
     subreddits = ["stocks", "StockMarket", "investing", "news"]
     posts = []
@@ -40,6 +40,7 @@ def get_reddit_posts(ticker, limit=5000):
             })
     return posts
 
+# This is used to get the sentiment from all of those posts
 def scrape_reddit_sentiment(ticker):
     posts = get_reddit_posts(ticker)
     data = []
@@ -56,13 +57,13 @@ def scrape_reddit_sentiment(ticker):
 sentiment_df = scrape_reddit_sentiment(ticker)
 sentiment_daily = sentiment_df.groupby("date").mean().reset_index()
 
-
-data.reset_index(inplace=True)  # Moves date from index into a column
-data["Date"] = pd.to_datetime(data["Date"]).dt.date.astype(str)  # Format to match sentiment dates
-sentiment_daily = sentiment_daily.reset_index(drop=True)  # In case it has leftover index
+# This is used to merge the quantitative data with the sentiment data
+data.reset_index(inplace=True)
+data["Date"] = pd.to_datetime(data["Date"]).dt.date.astype(str) 
+sentiment_daily = sentiment_daily.reset_index(drop=True) 
 merged_df = data.merge(sentiment_daily, left_on="Date", right_on="date", how="left")
-merged_df.drop(columns=["date"], inplace=True)  # optional
-merged_df.dropna(subset=["sentiment"], inplace=True)  # keep only rows with sentiment
+merged_df.drop(columns=["date"], inplace=True)
+merged_df.dropna(subset=["sentiment"], inplace=True) 
 
 
 # Feature engineering
