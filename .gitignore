@@ -13,3 +13,11 @@ __pycache__/
 
 # OS files
 .DS_Store
+
+# Data cache: downloaded/derived data, ignored except the curated universe snapshot
+data_cache/*
+!data_cache/universe_snapshot.csv
+
+# Front end: commit the snapshot + the standalone dashboard so a fresh clone
+# renders instantly, but ignore the transient body-only Artifact publish input.
+frontend/dashboard.body.html
