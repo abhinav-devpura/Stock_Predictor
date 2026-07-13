@@ -50,9 +50,30 @@ streamlit run app.py                                  # open the dashboard
 To rebuild the snapshot from your own freshly-fetched data:
 
 ```bash
-python scripts/build_picks.py        # recompute picks.json (uses data_cache/)
-python scripts/build_dashboard.py    # regenerate the standalone HTML
+python scripts/build_picks.py                   # recompute from cache (fast, same as last time)
+python scripts/build_picks.py --refresh         # + refetch prices (new as-of date, updated book/market)
+python scripts/build_picks.py --refresh-edgar   # + refetch SEC filings/fundamentals (slow; picks up new 10-K/10-Q)
+python scripts/build_dashboard.py               # regenerate the HTML pages + docs/
 ```
+
+Everything is cached under fixed keys, so a plain `build_picks.py` reproduces the
+last snapshot — use `--refresh` / `--refresh-edgar` to actually pull new data.
+
+## Keeping it fresh automatically
+
+`.github/workflows/refresh-picks.yml` rebuilds and commits the snapshot on a
+schedule, so GitHub Pages redeploys with fresh data — no manual step:
+
+- **Monthly** (1st): `--refresh` (prices only) — keeps book/market and the as-of date current.
+- **Quarterly** (mid Feb/May/Aug/Nov, after earnings season): `--refresh --refresh-edgar` — pulls newly-filed 10-K/10-Q and fundamentals, which is when the picks actually move.
+- Or trigger it by hand from the repo's **Actions** tab (with an optional EDGAR refetch).
+
+**One-time setup:** add your SEC user-agent as a repository secret —
+**Settings → Secrets and variables → Actions → New repository secret**, name
+`EDGAR_USER_AGENT`, value like `your-name research you@example.com`. The workflow
+persists `data_cache/` between runs so only new data is fetched. *(GitHub pauses
+scheduled workflows after 60 days of repo inactivity — a push or manual run
+re-arms them.)*
 
 ## First-run data note
 

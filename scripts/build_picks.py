@@ -73,14 +73,15 @@ def _equity_curve(bt, col="longshort"):
             for d, v in zip(r["Date"], curve)]
 
 
-def main():
+def main(refresh: bool = False, refresh_edgar: bool = False):
     tickers = _universe()
-    print(f"Building picks snapshot — {len(tickers)} tickers, horizon {FORWARD_HORIZON}d")
+    print(f"Building picks snapshot — {len(tickers)} tickers, horizon {FORWARD_HORIZON}d"
+          f"{'  [refresh prices]' if refresh else ''}{'  [refresh EDGAR]' if refresh_edgar else ''}")
 
-    panel = add_returns(load_price_panel(tickers))
+    panel = add_returns(load_price_panel(tickers, use_cache=not refresh))
     panel = attach_sector(panel)
-    panel = attach_fundamentals(panel)
-    panel = attach_filing_text(panel)
+    panel = attach_fundamentals(panel, use_cache=not refresh_edgar)
+    panel = attach_filing_text(panel, use_cache=not refresh_edgar)
     panel = value.add_features(panel)
     panel = disclosure.add_features(panel)
     panel = add_forward_return(panel, horizon=FORWARD_HORIZON)
@@ -180,4 +181,11 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    import argparse
+    ap = argparse.ArgumentParser(description="Build the picks snapshot -> frontend/picks.json")
+    ap.add_argument("--refresh", action="store_true",
+                    help="refetch prices from yfinance (ignore the price cache)")
+    ap.add_argument("--refresh-edgar", action="store_true",
+                    help="refetch EDGAR fundamentals + 10-K/10-Q text (slow; picks up new filings)")
+    args = ap.parse_args()
+    main(refresh=args.refresh, refresh_edgar=args.refresh_edgar)

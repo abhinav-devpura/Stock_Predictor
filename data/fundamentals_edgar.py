@@ -90,8 +90,11 @@ def load_fundamentals(tickers: list[str], start: str = START_DATE, use_cache: bo
             for ticker, df in results:
                 n_concepts = df["concept"].nunique() if not df.empty else 0
                 print(f"  {ticker}: {len(df)} fundamental facts, {n_concepts}/5 concepts")
-                if use_cache:
-                    write_parquet_cache(df, _fundamentals_cache_path(ticker, start))
+                # Persist even on a forced refresh (use_cache=False) so the fetch
+                # is saved, but never clobber a good cache with an empty/failed pull.
+                cpath = _fundamentals_cache_path(ticker, start)
+                if not df.empty or not cpath.exists():
+                    write_parquet_cache(df, cpath)
                 if not df.empty:
                     frames.append(df)
 
@@ -101,12 +104,14 @@ def load_fundamentals(tickers: list[str], start: str = START_DATE, use_cache: bo
     return pd.concat(frames, ignore_index=True)
 
 
-def attach_fundamentals(panel_df: pd.DataFrame) -> pd.DataFrame:
+def attach_fundamentals(panel_df: pd.DataFrame, use_cache: bool = True) -> pd.DataFrame:
     """Attach BookToMarket, EarningsYield, ROE, GrossProfitability to every
     stock-day via a leakage-safe as-of merge (each fundamental usable only on
     the next panel trading day strictly after its filing date — same rule as
-    data.earnings/insider). Ratios with a non-positive denominator -> NaN."""
-    fund = load_fundamentals(panel_df["Ticker"].unique().tolist())
+    data.earnings/insider). Ratios with a non-positive denominator -> NaN.
+
+    use_cache=False refetches from EDGAR (picks up newly-filed reports)."""
+    fund = load_fundamentals(panel_df["Ticker"].unique().tolist(), use_cache=use_cache)
     trading_dates = np.sort(panel_df["Date"].unique())
 
     pos = np.searchsorted(trading_dates, fund["filed"].to_numpy(), side="right")

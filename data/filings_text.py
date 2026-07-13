@@ -134,8 +134,11 @@ def load_text_features(tickers: list[str], start: str = START_DATE, use_cache: b
             for ticker, df in pool.map(work, to_fetch):
                 n_sim = int(df["TextSimilarity"].notna().sum()) if not df.empty else 0
                 print(f"  {ticker}: {len(df)} filings, {n_sim} with similarity")
-                if use_cache:
-                    write_parquet_cache(df, _cache_path(ticker, start))
+                # Persist even on a forced refresh (use_cache=False) so the fetch
+                # is saved, but never clobber a good cache with an empty/failed pull.
+                cpath = _cache_path(ticker, start)
+                if not df.empty or not cpath.exists():
+                    write_parquet_cache(df, cpath)
                 if not df.empty:
                     frames.append(df.assign(Ticker=ticker))
 
@@ -145,11 +148,13 @@ def load_text_features(tickers: list[str], start: str = START_DATE, use_cache: b
     return pd.concat(frames, ignore_index=True)
 
 
-def attach_filing_text(panel_df: pd.DataFrame) -> pd.DataFrame:
+def attach_filing_text(panel_df: pd.DataFrame, use_cache: bool = True) -> pd.DataFrame:
     """Attach TextSimilarity, NegTone, UncTone to every stock-day via a
     leakage-safe as-of merge (each filing usable only on the next panel trading
-    day strictly after its FilingDate — same rule as data.earnings/insider)."""
-    feat = load_text_features(panel_df["Ticker"].unique().tolist())
+    day strictly after its FilingDate — same rule as data.earnings/insider).
+
+    use_cache=False refetches from EDGAR (picks up newly-filed 10-K/10-Q)."""
+    feat = load_text_features(panel_df["Ticker"].unique().tolist(), use_cache=use_cache)
     trading_dates = np.sort(panel_df["Date"].unique())
 
     pos = np.searchsorted(trading_dates, feat["FilingDate"].to_numpy(), side="right")
