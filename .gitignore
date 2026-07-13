@@ -4,6 +4,7 @@ venv/
 # Bytecode and caches
 __pycache__/
 *.pyc
+.pytest_cache/
 
 # Jupyter notebooks checkpoints
 .ipynb_checkpoints/

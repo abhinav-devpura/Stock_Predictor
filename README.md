@@ -1,5 +1,8 @@
 # Stock Predictor — cross-sectional factor research + daily picks dashboard
 
+[![tests](https://github.com/abhinav-devpura/Stock_Predictor/actions/workflows/tests.yml/badge.svg)](https://github.com/abhinav-devpura/Stock_Predictor/actions/workflows/tests.yml)
+[![license: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 A behavioral-finance quant-research pipeline that ranks stocks each day by a
 **combined cross-sectional score**, built from two edges that survived a strict
 event-study + beta-neutral long-short validation gate:
@@ -11,14 +14,15 @@ event-study + beta-neutral long-short validation gate:
 
 Every factor family we tested is measured as a **beta-neutral long-short** (top
 decile minus bottom decile, rebalanced every ~21 trading days, net of costs), so
-the reported edge is alpha rather than market beta. See [NOTES.md](NOTES.md) for
-the full research log, including the factors that *failed* the gate.
+the reported edge is alpha rather than market beta.
 
 > ⚠️ Research prototype for educational use — **not investment advice.**
 
-## The dashboard
+![Daily Best Picks dashboard](assets/dashboard.png)
 
-**Live:** https://abhinav-devpura.github.io/Stock_Predictor/ *(via GitHub Pages — see below)*
+**Live dashboard:** https://abhinav-devpura.github.io/Stock_Predictor/
+
+## The dashboard
 
 Two front ends, both reading a single pre-computed snapshot
 (`frontend/picks.json`) so they render instantly with no data refetch:
@@ -36,6 +40,57 @@ clone shows the dashboard **immediately** — no hours-long first-run fetch.
 → `main` → `/docs`. Your dashboard goes live at the Live URL above — a *project
 site*, independent of any `username.github.io` personal site you may already have.
 Re-run the build and commit `docs/` to refresh it.
+
+## Results
+
+Two factors cleared the validation gate; five families were rejected. Each edge
+is a beta-neutral long-short (top decile minus bottom decile), net of 10 bps.
+
+| Edge | Signal | Gate | Beta-neutral LS | Sharpe | Survivorship bias |
+|---|---|---|---|---|---|
+| **Value** | sector-neutral book/market | strict PASS | **+8.9%/yr** | 0.75 | *inflates* it → read with caution |
+| **Text-change** | section-level 10-K/10-Q similarity | PASS | **+13.9%/yr** | 0.85 | *understates* it → conservative |
+
+The two are essentially uncorrelated (−0.13), and both *strengthen* out of sample
+rather than fading. The rejected families — with the reason each failed — are the
+other half of the story:
+
+| Rejected | Idea | Why it failed |
+|---|---|---|
+| Calendar effects | turn-of-month / January seasonality | unstable or wrong-signed |
+| Momentum (12–1) | winners keep winning | ≈0, flips across the regime split |
+| PEAD | post-earnings drift | early pass, faded late; vanishes as a long-short |
+| Short-term reversal | 5-day losers bounce | huge early (*t*=7.4), gone late |
+| Insider buying (Form 4) | insiders buy before good news | early-strong / late-fade |
+
+The full phase-by-phase log is in [NOTES.md](NOTES.md); the illustrated version
+is the **[How it was built](https://abhinav-devpura.github.io/Stock_Predictor/process.html)** page.
+
+## Methodology & limitations
+
+**How a factor earns its place.** Every candidate must clear the same event-study
+gate before it's used: rank the universe, compare the top vs. bottom bucket's
+forward returns (Welch *t*-test), and require significance in **both halves** of
+the sample with the sign fixed *a priori* — then confirm a positive
+**beta-neutral long-short** (which strips out market beta, the trap that made an
+early top-decile portfolio look like alpha when it wasn't). The gate harness is
+self-tested on synthetic data.
+
+**Leakage discipline.** Fundamentals and filings are aligned point-in-time — a
+value is usable only on the next trading day strictly *after* its SEC filing
+date — and validation samples non-overlapping forward windows with an embargo,
+so no future information reaches a signal. These invariants are enforced by unit
+tests (`tests/test_leakage.py`).
+
+**Limitations (read these).**
+- **Survivorship bias.** The universe is today's index members, so bankrupt names
+  are absent. This *inflates* the value edge (its true premium is likely well
+  below +8.9%) and *understates* text-change. Magnitudes should be read with
+  skepticism; the qualitative behavior is the robust finding.
+- **Small universe / period.** ~150–565 names since 2016 — not a full
+  cross-section, and one macro regime (the 2021+ shift) dominates the split.
+- **Costs & capacity.** Backtests charge 10 bps and ignore market impact, borrow
+  cost on the short leg, and capacity limits. This is research, not a live P&L.
 
 ## Quick start
 

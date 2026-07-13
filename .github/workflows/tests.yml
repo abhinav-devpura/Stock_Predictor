@@ -1,0 +1,25 @@
+name: tests
+
+# Runs the event-study self-test (8 synthetic-data checks) and the leakage unit
+# tests on every push / PR. The green badge in the README reflects this workflow.
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - run: pip install -r requirements.txt -r requirements-dev.txt
+      - name: Event-study harness self-test
+        run: python -m validation.self_test
+      - name: Leakage + unit tests
+        run: pytest -q
