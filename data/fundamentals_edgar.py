@@ -64,36 +64,55 @@ def _fetch_ticker(ticker: str, cik: str) -> pd.DataFrame:
     return pd.DataFrame(rows, columns=["Ticker", "concept", "period_end", "filed", "val"])
 
 
-def load_fundamentals(tickers: list[str], start: str = START_DATE, use_cache: bool = True) -> pd.DataFrame:
+def load_fundamentals(tickers: list[str], start: str = START_DATE,
+                      use_cache: bool = True, incremental: bool = False) -> pd.DataFrame:
     """Long-format point-in-time fundamentals: one row per (Ticker, concept,
     reported value) with its period_end and filing date. Cached per ticker.
-    Concurrent + rate-limited via data.edgar. Tickers with no XBRL are skipped."""
+    Concurrent + rate-limited via data.edgar. Tickers with no XBRL are skipped.
+
+    incremental=True: refetch each cached ticker's companyfacts (one request) but
+    only rewrite/use the new data when it contains a filing newer than the cache,
+    otherwise keep the cached version untouched (captures new reports, no churn).
+    use_cache=False forces a full refetch."""
     cik_map = load_cik_map()
 
     to_fetch, frames = [], []
     for ticker in tickers:
         path = _fundamentals_cache_path(ticker, start)
-        if use_cache:
-            cached = read_parquet_cache(path)
-            if cached is not None:
-                frames.append(cached)
-                continue
+        cached = read_parquet_cache(path) if (use_cache or incremental) else None
+        if cached is not None and not incremental:
+            frames.append(cached)
+            continue
         cik = cik_map.get(ticker)
         if cik is None:
-            print(f"WARNING: no CIK for {ticker}, skipping fundamentals")
+            if cached is not None:
+                frames.append(cached)  # keep what we have
+            else:
+                print(f"WARNING: no CIK for {ticker}, skipping fundamentals")
             continue
-        to_fetch.append((ticker, cik))
+        to_fetch.append((ticker, cik, cached))
+
+    def work(tc):
+        ticker, cik, cached = tc
+        fresh = _fetch_ticker(ticker, cik)
+        if incremental and cached is not None and not cached.empty:
+            new_max = fresh["filed"].max() if not fresh.empty else None
+            if new_max is None or new_max <= cached["filed"].max():
+                return ticker, cached, False  # nothing newer than the cache
+            return ticker, fresh, True
+        return ticker, fresh, True
 
     if to_fetch:
         with ThreadPoolExecutor(max_workers=MAX_WORKERS) as pool:
-            results = pool.map(lambda tc: (tc[0], _fetch_ticker(*tc)), to_fetch)
-            for ticker, df in results:
+            for ticker, df, changed in pool.map(work, to_fetch):
                 n_concepts = df["concept"].nunique() if not df.empty else 0
-                print(f"  {ticker}: {len(df)} fundamental facts, {n_concepts}/5 concepts")
-                # Persist even on a forced refresh (use_cache=False) so the fetch
-                # is saved, but never clobber a good cache with an empty/failed pull.
+                tag = " (+new)" if changed and incremental else ""
+                print(f"  {ticker}: {len(df)} fundamental facts, {n_concepts}/5 concepts{tag}")
+                # Persist changed results (even on a forced refresh), but never
+                # clobber a good cache with an empty/failed pull, and skip rewrites
+                # when an incremental refetch found nothing new (avoids churn).
                 cpath = _fundamentals_cache_path(ticker, start)
-                if not df.empty or not cpath.exists():
+                if changed and (not df.empty or not cpath.exists()):
                     write_parquet_cache(df, cpath)
                 if not df.empty:
                     frames.append(df)
@@ -104,14 +123,16 @@ def load_fundamentals(tickers: list[str], start: str = START_DATE, use_cache: bo
     return pd.concat(frames, ignore_index=True)
 
 
-def attach_fundamentals(panel_df: pd.DataFrame, use_cache: bool = True) -> pd.DataFrame:
+def attach_fundamentals(panel_df: pd.DataFrame, use_cache: bool = True,
+                        incremental: bool = False) -> pd.DataFrame:
     """Attach BookToMarket, EarningsYield, ROE, GrossProfitability to every
     stock-day via a leakage-safe as-of merge (each fundamental usable only on
     the next panel trading day strictly after its filing date — same rule as
     data.earnings/insider). Ratios with a non-positive denominator -> NaN.
 
-    use_cache=False refetches from EDGAR (picks up newly-filed reports)."""
-    fund = load_fundamentals(panel_df["Ticker"].unique().tolist(), use_cache=use_cache)
+    incremental=True fetches newly-filed reports since the cache (cheap)."""
+    fund = load_fundamentals(panel_df["Ticker"].unique().tolist(),
+                             use_cache=use_cache, incremental=incremental)
     trading_dates = np.sort(panel_df["Date"].unique())
 
     pos = np.searchsorted(trading_dates, fund["filed"].to_numpy(), side="right")

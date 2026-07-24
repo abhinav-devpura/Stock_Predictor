@@ -1,34 +1,29 @@
 name: Refresh picks
 
-# Rebuilds frontend/picks.json + the dashboard/docs and commits the result, so
-# GitHub Pages redeploys with fresh data. Two cadences match the data:
-#   - Monthly  (1st): prices only — cheap, keeps book/market + the as-of date current.
-#   - Quarterly (mid Feb/May/Aug/Nov, after earnings season): prices + a full EDGAR
-#     refetch, so newly-filed 10-K/10-Q and fundamentals flow into the picks.
-# You can also run it by hand from the Actions tab (optionally forcing an EDGAR pull).
+# Monthly refresh of BOTH signals, then commit so GitHub Pages redeploys:
+#   - prices (--refresh): updates market cap / book-to-market and the as-of date
+#   - EDGAR (--refresh-edgar): INCREMENTAL — fetches only 10-K/10-Q + fundamentals
+#     filed since the committed cache (most months that's little or nothing), so
+#     it stays fast instead of re-pulling thousands of documents.
+# The updated EDGAR feature caches are committed back, so each run builds on the
+# last. Runs on the 1st of each month, or on demand from the Actions tab.
 
 on:
   schedule:
-    - cron: "0 6 1 * *"            # monthly — prices only
-    - cron: "0 6 12 2,5,8,11 *"    # quarterly — prices + EDGAR
+    - cron: "0 6 1 * *"        # 1st of each month, 06:00 UTC
   workflow_dispatch:
-    inputs:
-      refresh_edgar:
-        description: "Also refetch EDGAR (slow; picks up new filings)"
-        type: boolean
-        default: false
 
 permissions:
-  contents: write                  # allow the job to commit the refreshed files
+  contents: write
 
-concurrency:                       # never let two refreshes race on a push
+concurrency:
   group: refresh-picks
   cancel-in-progress: false
 
 jobs:
   refresh:
     runs-on: ubuntu-latest
-    timeout-minutes: 90            # the quarterly EDGAR pull is the long pole
+    timeout-minutes: 45         # incremental EDGAR + prices; ample headroom
     steps:
       - uses: actions/checkout@v4
 
@@ -39,39 +34,19 @@ jobs:
 
       - run: pip install -r requirements.txt
 
-      # Persist data_cache/ between runs (it is git-ignored). The rolling key +
-      # restore-keys means each run restores the latest cache and saves an updated
-      # one, so only the monthly PRICE fetch (fast) and quarterly EDGAR delta run.
-      - name: Restore data cache
-        uses: actions/cache@v4
-        with:
-          path: data_cache
-          key: data-cache-${{ github.run_id }}
-          restore-keys: data-cache-
-
-      # Full EDGAR refetch on the quarterly cron, or when manually requested.
-      - name: Decide refresh mode
-        id: mode
-        run: |
-          if [ "${{ github.event.schedule }}" = "0 6 12 2,5,8,11 *" ] \
-             || [ "${{ github.event.inputs.refresh_edgar }}" = "true" ]; then
-            echo "edgar=--refresh-edgar" >> "$GITHUB_OUTPUT"
-          else
-            echo "edgar=" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Rebuild snapshot + pages
+      - name: Rebuild snapshot + pages (prices + incremental EDGAR)
         env:
           EDGAR_USER_AGENT: ${{ secrets.EDGAR_USER_AGENT }}
         run: |
-          python scripts/build_picks.py --refresh ${{ steps.mode.outputs.edgar }}
+          python scripts/build_picks.py --refresh --refresh-edgar
           python scripts/build_dashboard.py
 
-      - name: Commit if the snapshot changed
+      - name: Commit if anything changed
         run: |
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add frontend/picks.json frontend/dashboard.html frontend/process.html docs/
+          git add frontend/picks.json frontend/dashboard.html frontend/process.html docs/ \
+                  data_cache/fundamentals_*.parquet data_cache/filingtext_v2_*.parquet
           if git diff --cached --quiet; then
             echo "No change in picks — nothing to commit."
           else

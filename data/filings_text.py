@@ -66,10 +66,16 @@ def _cosine(a: str, b: str) -> float:
         return np.nan
 
 
-def _text_features_for_ticker(cik: str, start: str) -> pd.DataFrame:
-    """Per-filing full-doc + section-level TextSimilarity (vs prior same-form
-    filing) + LM tone."""
-    filings = sorted(list_filings(cik, {"10-K", "10-Q"}, start), key=lambda f: f[1])  # by filing date
+_TEXT_COLS = ["FilingDate", "form", "TextSimilarity", "SectionSimilarity", "NegTone", "UncTone"]
+_LOOKBACK_DAYS = 450  # re-fetch window for incremental updates: long enough to
+# re-include the prior same-form filing (annual 10-K / quarterly 10-Q) as the
+# TF-IDF similarity baseline for any newly-filed report.
+
+
+def _features_from_filings(cik: str, filings: list) -> pd.DataFrame:
+    """Compute per-filing features for a given filing list (fetches each doc's
+    text and diffs it against the prior same-form filing in the list)."""
+    filings = sorted(filings, key=lambda f: f[1])  # by filing date
     texts = [fetch_filing_text(cik, acc, doc) for acc, fd, doc, form in filings]
 
     rows = []
@@ -91,53 +97,91 @@ def _text_features_for_ticker(cik: str, start: str) -> pd.DataFrame:
             prev_sec[form] = sec
         rows.append({"FilingDate": fdate, "form": form, "TextSimilarity": full_sim,
                      "SectionSimilarity": sec_sim, "NegTone": neg, "UncTone": unc})
-    return pd.DataFrame(rows, columns=["FilingDate", "form", "TextSimilarity",
-                                       "SectionSimilarity", "NegTone", "UncTone"])
+    return pd.DataFrame(rows, columns=_TEXT_COLS)
+
+
+def _text_features_for_ticker(cik: str, start: str) -> pd.DataFrame:
+    """Per-filing full-doc + section-level TextSimilarity (vs prior same-form
+    filing) + LM tone, over all 10-K/10-Q filings since `start`."""
+    return _features_from_filings(cik, list_filings(cik, {"10-K", "10-Q"}, start))
+
+
+def _incremental_text_features(cik: str, cached: pd.DataFrame) -> pd.DataFrame:
+    """Append only filings NEWER than what's cached. Lists filings in a lookback
+    window (cheap, one request); if none are newer, returns the cache untouched
+    with NO document fetches. Otherwise fetches just the window (so the new
+    filing's prior same-form baseline is present), keeps the genuinely-new rows,
+    and merges them into the cache."""
+    latest = str(cached["FilingDate"].max())
+    lookback = (pd.Timestamp(latest) - pd.Timedelta(days=_LOOKBACK_DAYS)).date().isoformat()
+    filings = list_filings(cik, {"10-K", "10-Q"}, lookback)
+    if not any(f[1] > latest for f in filings):
+        return cached  # nothing new — no text downloads
+    fresh = _features_from_filings(cik, filings)
+    new_rows = fresh[fresh["FilingDate"] > latest]
+    if new_rows.empty:
+        return cached
+    out = pd.concat([cached, new_rows], ignore_index=True)
+    return out.drop_duplicates(["FilingDate", "form"], keep="last").sort_values("FilingDate").reset_index(drop=True)
 
 
 def _cache_path(ticker: str, start: str) -> Path:
     return CACHE_DIR / f"filingtext_v2_{ticker}_{start}.parquet"  # v2: + SectionSimilarity
 
 
-def load_text_features(tickers: list[str], start: str = START_DATE, use_cache: bool = True) -> pd.DataFrame:
+def load_text_features(tickers: list[str], start: str = START_DATE,
+                       use_cache: bool = True, incremental: bool = False) -> pd.DataFrame:
     """Per-filing disclosure features [Ticker, FilingDate, form, TextSimilarity,
-    NegTone, UncTone]. Cached per ticker (filings never change). Fetches each
-    ticker's 10-K/10-Q text concurrently across tickers, rate-limited via
-    data.edgar. Warns+skips tickers that error."""
+    SectionSimilarity, NegTone, UncTone]. Cached per ticker, fetched concurrently
+    and rate-limited via data.edgar. Warns+skips tickers that error.
+
+    incremental=True: for cached tickers, fetch only filings newer than the cache
+    and append them (cheap — most runs download nothing). Without a cache for a
+    ticker it falls back to a full fetch. use_cache=False forces a full refetch."""
     cik_map = load_cik_map()
     to_fetch, frames = [], []
     for ticker in tickers:
         path = _cache_path(ticker, start)
-        if use_cache:
-            cached = read_parquet_cache(path)
-            if cached is not None:
-                frames.append(cached.assign(Ticker=ticker))
-                continue
+        cached = read_parquet_cache(path) if (use_cache or incremental) else None
+        if cached is not None and not incremental:
+            frames.append(cached.assign(Ticker=ticker))
+            continue
         cik = cik_map.get(ticker)
         if cik is None:
-            print(f"WARNING: no CIK for {ticker}, skipping filing text")
+            if cached is not None:
+                frames.append(cached.assign(Ticker=ticker))  # keep what we have
+            else:
+                print(f"WARNING: no CIK for {ticker}, skipping filing text")
             continue
-        to_fetch.append((ticker, cik))
+        to_fetch.append((ticker, cik, cached))
 
     def work(tc):
-        ticker, cik = tc
+        ticker, cik, cached = tc
         try:
-            df = _text_features_for_ticker(cik, start)
+            if incremental and cached is not None and not cached.empty:
+                df = _incremental_text_features(cik, cached)
+                changed = len(df) != len(cached)
+            else:
+                df = _text_features_for_ticker(cik, start)
+                changed = True
         except Exception as e:  # noqa: BLE001
             print(f"WARNING: filing-text failed for {ticker} ({e})")
-            df = pd.DataFrame(columns=["FilingDate", "form", "TextSimilarity", "NegTone", "UncTone"])
-        return ticker, df
+            df = cached if cached is not None else pd.DataFrame(columns=_TEXT_COLS)
+            changed = False
+        return ticker, df, changed
 
     if to_fetch:
         # Modest worker count: each task itself fans out many document fetches.
         with ThreadPoolExecutor(max_workers=max(2, MAX_WORKERS // 2)) as pool:
-            for ticker, df in pool.map(work, to_fetch):
+            for ticker, df, changed in pool.map(work, to_fetch):
                 n_sim = int(df["TextSimilarity"].notna().sum()) if not df.empty else 0
-                print(f"  {ticker}: {len(df)} filings, {n_sim} with similarity")
-                # Persist even on a forced refresh (use_cache=False) so the fetch
-                # is saved, but never clobber a good cache with an empty/failed pull.
+                tag = " (+new)" if changed and incremental else ""
+                print(f"  {ticker}: {len(df)} filings, {n_sim} with similarity{tag}")
+                # Persist changed results (even on a forced refresh), but never
+                # clobber a good cache with an empty/failed pull, and skip rewrites
+                # when an incremental update found nothing new (avoids churn).
                 cpath = _cache_path(ticker, start)
-                if not df.empty or not cpath.exists():
+                if changed and (not df.empty or not cpath.exists()):
                     write_parquet_cache(df, cpath)
                 if not df.empty:
                     frames.append(df.assign(Ticker=ticker))
@@ -148,13 +192,15 @@ def load_text_features(tickers: list[str], start: str = START_DATE, use_cache: b
     return pd.concat(frames, ignore_index=True)
 
 
-def attach_filing_text(panel_df: pd.DataFrame, use_cache: bool = True) -> pd.DataFrame:
+def attach_filing_text(panel_df: pd.DataFrame, use_cache: bool = True,
+                       incremental: bool = False) -> pd.DataFrame:
     """Attach TextSimilarity, NegTone, UncTone to every stock-day via a
     leakage-safe as-of merge (each filing usable only on the next panel trading
     day strictly after its FilingDate — same rule as data.earnings/insider).
 
-    use_cache=False refetches from EDGAR (picks up newly-filed 10-K/10-Q)."""
-    feat = load_text_features(panel_df["Ticker"].unique().tolist(), use_cache=use_cache)
+    incremental=True fetches only newly-filed 10-K/10-Q since the cache (cheap)."""
+    feat = load_text_features(panel_df["Ticker"].unique().tolist(),
+                              use_cache=use_cache, incremental=incremental)
     trading_dates = np.sort(panel_df["Date"].unique())
 
     pos = np.searchsorted(trading_dates, feat["FilingDate"].to_numpy(), side="right")

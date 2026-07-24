@@ -80,8 +80,8 @@ def main(refresh: bool = False, refresh_edgar: bool = False):
 
     panel = add_returns(load_price_panel(tickers, use_cache=not refresh))
     panel = attach_sector(panel)
-    panel = attach_fundamentals(panel, use_cache=not refresh_edgar)
-    panel = attach_filing_text(panel, use_cache=not refresh_edgar)
+    panel = attach_fundamentals(panel, incremental=refresh_edgar)
+    panel = attach_filing_text(panel, incremental=refresh_edgar)
     panel = value.add_features(panel)
     panel = disclosure.add_features(panel)
     panel = add_forward_return(panel, horizon=FORWARD_HORIZON)
@@ -186,6 +186,7 @@ if __name__ == "__main__":
     ap.add_argument("--refresh", action="store_true",
                     help="refetch prices from yfinance (ignore the price cache)")
     ap.add_argument("--refresh-edgar", action="store_true",
-                    help="refetch EDGAR fundamentals + 10-K/10-Q text (slow; picks up new filings)")
+                    help="incrementally fetch newly-filed SEC 10-K/10-Q + fundamentals since "
+                         "the cache (fast — most runs download little or nothing)")
     args = ap.parse_args()
     main(refresh=args.refresh, refresh_edgar=args.refresh_edgar)

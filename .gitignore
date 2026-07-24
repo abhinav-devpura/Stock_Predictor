@@ -15,9 +15,16 @@ __pycache__/
 # OS files
 .DS_Store
 
-# Data cache: downloaded/derived data, ignored except the curated universe snapshot
+# Data cache. Big/volatile market data (price panels ~90MB, benchmark) stays
+# ignored and is re-fetched on demand — fast. The small, expensive-to-compute
+# EDGAR feature caches (fundamentals + filing text + CIK map, ~6MB total) ARE
+# committed, so a fresh clone AND CI can run without a multi-hour SEC re-fetch.
 data_cache/*
 !data_cache/universe_snapshot.csv
+!data_cache/edgar_cik_map.parquet
+!data_cache/fundamentals_*.parquet
+!data_cache/filingtext_v2_*.parquet
+!data_cache/earnings_*.parquet
 
 # Front end: commit the snapshot + the standalone dashboard so a fresh clone
 # renders instantly, but ignore the transient body-only Artifact publish input.

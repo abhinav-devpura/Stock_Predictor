@@ -116,19 +116,25 @@ last snapshot — use `--refresh` / `--refresh-edgar` to actually pull new data.
 
 ## Keeping it fresh automatically
 
-`.github/workflows/refresh-picks.yml` rebuilds and commits the snapshot on a
-schedule, so GitHub Pages redeploys with fresh data — no manual step:
+`.github/workflows/refresh-picks.yml` runs on the **1st of each month** (or on
+demand from the **Actions** tab) and refreshes **both** signals, then commits so
+Pages redeploys:
 
-- **Monthly** (1st): `--refresh` (prices only) — keeps book/market and the as-of date current.
-- **Quarterly** (mid Feb/May/Aug/Nov, after earnings season): `--refresh --refresh-edgar` — pulls newly-filed 10-K/10-Q and fundamentals, which is when the picks actually move.
-- Or trigger it by hand from the repo's **Actions** tab (with an optional EDGAR refetch).
+- **Prices** (`--refresh`) — updates market cap / book-to-market and the as-of date.
+- **EDGAR, incremental** (`--refresh-edgar`) — fetches only the 10-K/10-Q and
+  fundamentals **filed since the committed cache**. The expensive-to-compute
+  features are committed to the repo, so a run downloads only what's genuinely new
+  (usually little or nothing) and finishes in minutes — no full multi-hour SEC
+  re-pull. Updated caches are committed back, so each run builds on the last.
+
+This means the **stronger text-change signal stays current too**, not just the
+price-driven value signal — new filings show up at the next monthly run.
 
 **One-time setup:** add your SEC user-agent as a repository secret —
 **Settings → Secrets and variables → Actions → New repository secret**, name
-`EDGAR_USER_AGENT`, value like `your-name research you@example.com`. The workflow
-persists `data_cache/` between runs so only new data is fetched. *(GitHub pauses
-scheduled workflows after 60 days of repo inactivity — a push or manual run
-re-arms them.)*
+`EDGAR_USER_AGENT`, value like `your-name research you@example.com` (the
+incremental fetch hits SEC EDGAR, so this is required). *(GitHub pauses scheduled
+workflows after 60 days of repo inactivity — a push or manual run re-arms them.)*
 
 ## First-run data note
 
